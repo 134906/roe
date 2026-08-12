@@ -1,17 +1,15 @@
 # ppt_export.py
 import os
+import tempfile
 import win32com.client
 from win32com.client import constants
 
 def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=None):
     """
-    将 Excel 工作簿中指定工作表的图表复制为可编辑的 OLE 对象到 PowerPoint。
-    - excel_path: 已填充数据的 Workfile (.xlsx)
-    - ppt_path: 输出 PPT 文件路径 (.pptx)
-    - template_path: 可选，PPT 模板文件路径
-    - sheet_names: 可选，要提取图表的工作表名称列表，若为None则提取所有工作表中的图表
+    将 Excel 工作簿中指定工作表的图表复制到 PowerPoint。
+    优先尝试复制为可编辑的 OLE 对象（与 Ctrl+C/Ctrl+V 行为一致），
+    失败则导出为图片插入。
     """
-    # ---- 转为绝对路径，避免相对路径问题 ----
     excel_path = os.path.abspath(excel_path)
     ppt_path = os.path.abspath(ppt_path)
     if template_path:
@@ -34,17 +32,15 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
     try:
         ppt_app.Visible = False
     except Exception:
-        ppt_app.Visible = True   # 某些环境不允许隐藏
+        ppt_app.Visible = True
 
     if template_path and os.path.exists(template_path):
         pres = ppt_app.Presentations.Open(template_path)
     else:
         pres = ppt_app.Presentations.Add()
 
-    # ---- 收集所有图表 ----
+    # 收集图表
     charts = []
-
-    # 1) 独立图表工作表（Chart Sheets）
     if sheet_names is None:
         for sheet in wb.Charts:
             charts.append(('ChartSheet', sheet.Name, sheet))
@@ -53,7 +49,6 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
             if sheet.Name in sheet_names:
                 charts.append(('ChartSheet', sheet.Name, sheet))
 
-    # 2) 嵌入在工作表中的图表对象
     for sheet in wb.Worksheets:
         if sheet_names is None or sheet.Name in sheet_names:
             for shape in sheet.Shapes:
@@ -63,21 +58,16 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
     print(f"共收集到 {len(charts)} 个图表")
 
     if not charts:
-        print("在指定工作表中未找到任何图表，PPT 将不包含图表内容。")
+        print("未找到任何图表，PPT 将不包含图表内容。")
     else:
         for source, sheet_name, chart_obj in charts:
             success = False
-            # ---- 多次尝试复制（包括后备方案） ----
-            for attempt in range(3):  # 最多尝试3次
+            # ---- 尝试复制为 OLE（可编辑） ----
+            for attempt in range(2):  # 最多尝试两次
                 try:
-                    # 每次尝试前清空剪贴板，避免干扰
                     excel_app.CutCopyMode = False
-
                     if source == 'Worksheet':
-                        # 激活工作表
-                        ws = chart_obj.Parent
-                        ws.Activate()
-                        # 尝试多种方式激活图表本身（部分方法可能失败，忽略异常）
+                        chart_obj.Parent.Activate()
                         try:
                             chart_obj.Activate()
                         except:
@@ -90,49 +80,63 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
                             chart_obj.Select()
                         except:
                             pass
-
-                    # 尝试复制图表
-                    chart_obj.Copy()
+                    # 关键修改：使用 ChartArea.Copy() 复制完整对象
+                    try:
+                        chart_obj.ChartArea.Copy()
+                    except AttributeError:
+                        # 若为 Chart Sheet，直接 Copy
+                        chart_obj.Copy()
                     success = True
-                    break  # 成功则跳出重试循环
+                    break
                 except Exception as e:
-                    print(f"复制尝试 {attempt+1} 失败（源: {source}, 工作表: {sheet_name}）: {e}")
-                    # 若第三次仍失败，尝试复制为图片
-                    if attempt == 2:
-                        try:
-                            print("尝试复制为图片（CopyPicture）...")
-                            chart_obj.CopyPicture()
-                            success = True
-                            break
-                        except Exception as e2:
-                            print(f"复制为图片也失败: {e2}")
-                            success = False
+                    print(f"复制尝试 {attempt+1} 失败（{sheet_name}）: {e}")
 
-            if not success:
-                print(f"跳过图表（源: {source}, 工作表: {sheet_name}），无法复制")
-                continue
-
-            # 添加空白幻灯片
-            slide = pres.Slides.Add(pres.Slides.Count + 1, 12)  # 12 = ppLayoutBlank
-            # 粘贴为可编辑 OLE 对象（优先）
-            try:
-                slide.Shapes.PasteSpecial(DataType=constants.ppPasteOLEObject)
-            except Exception as e:
-                print(f"PasteSpecial 失败，使用 Paste: {e}")
+            if success:
+                slide = pres.Slides.Add(pres.Slides.Count + 1, 12)  # ppLayoutTitleOnly
+                # ---- 使用 ppPasteDefault (0) 模拟默认粘贴行为 ----
                 try:
-                    slide.Shapes.Paste()
-                except Exception as e2:
-                    print(f"Paste 也失败，跳过该图表: {e2}")
+                    # 显式指定 DataType=0, Link=False, DisplayAsIcon=False
+                    slide.Shapes.PasteSpecial(DataType=0, Link=False, DisplayAsIcon=False)
+                    print(f"成功粘贴图表（{sheet_name}）为可编辑对象 (Default)")
                     continue
+                except Exception as e:
+                    print(f"PasteSpecial Default 失败，尝试 OLE 对象: {e}")
+                    # 后备：显式尝试 OLE 对象 (10)
+                    try:
+                        slide.Shapes.PasteSpecial(DataType=10, Link=False, DisplayAsIcon=False)
+                        print(f"成功粘贴图表（{sheet_name}）为 OLE 对象")
+                        continue
+                    except Exception as e2:
+                        print(f"OLE 粘贴失败，回退到常规 Paste: {e2}")
+                        # 最终保底：普通 Paste（可能为图片）
+                        try:
+                            slide.Shapes.Paste()
+                            print(f"使用 Paste 粘贴成功（{sheet_name}）")
+                            continue
+                        except Exception as e3:
+                            print(f"Paste 也失败，将尝试导出为图片: {e3}")
 
-    # 保存 PPT
+            # ---- 后备方案：导出为图片 ----
+            try:
+                print(f"尝试导出 {sheet_name} 为图片...")
+                tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+                tmp_path = tmp.name
+                tmp.close()
+                chart_obj.Export(Filename=tmp_path, FilterName="PNG")
+                slide = pres.Slides.Add(pres.Slides.Count + 1, 12)
+                slide.Shapes.AddPicture(FileName=tmp_path, LinkToFile=False, SaveWithDocument=True,
+                                        Left=0, Top=0, Width=-1, Height=-1)
+                os.unlink(tmp_path)
+                print(f"成功插入图片（{sheet_name}）")
+            except Exception as e:
+                print(f"导出为图片失败（{sheet_name}）: {e}")
+                # 若全部失败，跳过该图表
+
+    # 保存并清理
     pres.SaveAs(ppt_path)
     pres.Close()
     ppt_app.Quit()
-
     wb.Close(SaveChanges=False)
     excel_app.Quit()
-
-    # 释放 COM 对象
     del pres, ppt_app, wb, excel_app
-    print(f"PPT 已生成（图表可编辑或图片）: {ppt_path}")
+    print(f"PPT 已生成: {ppt_path}")

@@ -1,6 +1,5 @@
 # ppt_export.py
 import os
-import time
 import win32com.client
 from win32com.client import constants
 
@@ -21,7 +20,7 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"Excel 文件不存在: {excel_path}")
 
-    # 启动 Excel（后台）
+    # 启动 Excel
     excel_app = win32com.client.Dispatch("Excel.Application")
     excel_app.Visible = False
     try:
@@ -30,7 +29,7 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
         excel_app.Quit()
         raise RuntimeError(f"无法打开 Excel 文件 {excel_path}: {e}")
 
-    # 启动 PowerPoint（后台，若不允许隐藏则设为可见）
+    # 启动 PowerPoint
     ppt_app = win32com.client.Dispatch("PowerPoint.Application")
     try:
         ppt_app.Visible = False
@@ -67,21 +66,55 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
         print("在指定工作表中未找到任何图表，PPT 将不包含图表内容。")
     else:
         for source, sheet_name, chart_obj in charts:
-            try:
-                # ---- 激活图表所在工作表（针对嵌入图表） ----
-                if source == 'Worksheet':
-                    # 激活工作表并选中图表，确保图表可复制
-                    chart_obj.Parent.Activate()
-                    chart_obj.Select()
-                # ---- 复制图表（可能失败，跳过） ----
-                chart_obj.Copy()
-            except Exception as e:
-                print(f"复制图表失败（源: {source}, 工作表: {sheet_name}）: {e}")
-                continue   # 跳过无法复制的图表
+            success = False
+            # ---- 多次尝试复制（包括后备方案） ----
+            for attempt in range(3):  # 最多尝试3次
+                try:
+                    # 每次尝试前清空剪贴板，避免干扰
+                    excel_app.CutCopyMode = False
+
+                    if source == 'Worksheet':
+                        # 激活工作表
+                        ws = chart_obj.Parent
+                        ws.Activate()
+                        # 尝试多种方式激活图表本身（部分方法可能失败，忽略异常）
+                        try:
+                            chart_obj.Activate()
+                        except:
+                            pass
+                        try:
+                            chart_obj.ChartArea.Select()
+                        except:
+                            pass
+                        try:
+                            chart_obj.Select()
+                        except:
+                            pass
+
+                    # 尝试复制图表
+                    chart_obj.Copy()
+                    success = True
+                    break  # 成功则跳出重试循环
+                except Exception as e:
+                    print(f"复制尝试 {attempt+1} 失败（源: {source}, 工作表: {sheet_name}）: {e}")
+                    # 若第三次仍失败，尝试复制为图片
+                    if attempt == 2:
+                        try:
+                            print("尝试复制为图片（CopyPicture）...")
+                            chart_obj.CopyPicture()
+                            success = True
+                            break
+                        except Exception as e2:
+                            print(f"复制为图片也失败: {e2}")
+                            success = False
+
+            if not success:
+                print(f"跳过图表（源: {source}, 工作表: {sheet_name}），无法复制")
+                continue
 
             # 添加空白幻灯片
             slide = pres.Slides.Add(pres.Slides.Count + 1, 12)  # 12 = ppLayoutBlank
-            # 粘贴为可编辑 OLE 对象
+            # 粘贴为可编辑 OLE 对象（优先）
             try:
                 slide.Shapes.PasteSpecial(DataType=constants.ppPasteOLEObject)
             except Exception as e:
@@ -102,4 +135,4 @@ def export_charts_to_ppt(excel_path, ppt_path, template_path=None, sheet_names=N
 
     # 释放 COM 对象
     del pres, ppt_app, wb, excel_app
-    print(f"PPT 已生成（图表可编辑）: {ppt_path}")
+    print(f"PPT 已生成（图表可编辑或图片）: {ppt_path}")

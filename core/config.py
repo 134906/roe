@@ -171,8 +171,21 @@ def load_definition(def_path):
             header=1,
             usecols=None
         )
-        if target_raw.shape[1] < 3:
-            raise ValueError("Factor_Target 表至少需要3列（VariableID, Name, Lable）")
+
+        # ========== 🛡️ 通用防御性清理（针对整个 Sheet） ==========
+        # 1. 删除所有列全为空的行（解决 Excel 末尾多余空行）
+        target_raw = target_raw.dropna(how='all')
+        
+        # 2. 强制删除前三列（B列 VariableID, C列 Name, D列 Lable）中任意一列为空的行
+        #    因为这三列缺一不可（索引0是A列可能空，所以用 1,2,3）
+        target_raw = target_raw.dropna(subset=[target_raw.columns[1], target_raw.columns[2], target_raw.columns[3]])
+        
+        # 3. 删除 D 列（Lable）为纯空格或空字符串的行（解决看不见的空格）
+        target_raw = target_raw[target_raw.iloc[:, 3].astype(str).str.strip() != '']
+        # ==========================================================
+
+        if target_raw.shape[1] < 4:   # 至少要有 A~D 四列（虽然A可能空）
+            raise ValueError("Factor_Target 表至少需要4列（A列可能空，B=VariableID, C=Name, D=Lable）")
         
         factor_cols = [col for col in target_raw.columns if col.startswith('Factor')]
         if len(factor_cols) == 0:
@@ -182,14 +195,21 @@ def load_definition(def_path):
         factor_df = factor_df.fillna(0)
         factor_df = factor_df.apply(lambda col: col.map(lambda x: 1 if x == 1 else 0))
         
+        # 行索引设为 C 列
         factor_df.index = target_raw.iloc[:, 2].tolist()
+        print("调试：读取到的 Name 列内容如下：", target_raw.iloc[:, 2].tolist())
         
         config['factor_target'] = factor_df
         config['extract_factor_num'] = len(factor_cols)
-        config['factor_var_labels'] = dict(zip(
-            target_raw.iloc[:, 2],
-            target_raw.iloc[:, 3]
-        ))
+        
+        # 变量标签：键 = C列（Name），值 = D列（Lable），供报表显示用
+        # 如果 D 列有空值，可以用 C 列作为后备
+        labels = {}
+        for name, lable in zip(target_raw.iloc[:, 2], target_raw.iloc[:, 3]):
+            labels[name] = lable if pd.notna(lable) and str(lable).strip() != '' else name
+        config['factor_var_labels'] = labels
+        
+        # 变量 ID：用 B 列（VariableID）
         config['factor_var_ids'] = target_raw.iloc[:, 1].tolist()
         
         print(f"✅ Factor_Target读取完成，共{len(factor_cols)}个因子，{len(factor_df)}个变量")

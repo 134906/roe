@@ -1,3 +1,12 @@
 git add .
 git commit -m "本次修改内容描述"
 git push
+
+
+
+打包
+python -m PyInstaller -w -D --name ROE_Scan --clean --hidden-import win32com.client app.py
+
+python -m venv roe_env                        #新建虚拟环境
+roe_env\Scripts\activate                      #激活虚拟环境
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple           #批量安装

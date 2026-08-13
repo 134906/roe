@@ -27,7 +27,7 @@ def _adjust_chart_data_range(chart):
         total_rows = rng.Rows.Count
         total_cols = rng.Columns.Count
         if total_rows < 2 or total_cols < 2:
-            return  # 只有标题行或列，无需调整
+            return  
 
         # ---- 检查列标题（第一行）----
         # 第一列（行标签列）总是保留，从第2列开始检查

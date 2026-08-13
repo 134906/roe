@@ -10,3 +10,30 @@ python -m PyInstaller -w -D --name ROE_Scan --clean --hidden-import win32com.cli
 python -m venv roe_env                        #新建虚拟环境
 roe_env\Scripts\activate                      #激活虚拟环境
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple           #批量安装
+
+
+
+
+ROE_SCAN_Analysis/
+│
+├── app.py                          # GUI 入口（Tkinter），调用 core.run_analysis
+│
+├── core/                           # 核心业务逻辑包
+│   ├── __init__.py                 # 主函数 run_analysis，协调整个流程
+│   ├── config.py                   # 加载 Excel 定义文件（Config, Factor_Target, Merge）
+│   ├── data_io.py                  # 读取 SPSS (.sav)、变量重编码、合并、权重预处理
+│   ├── descriptives.py             # 描述统计（支持加权）、样本量核对
+│   ├── factor_analysis.py          # 主成分分析 + Procrustes 旋转（因子分析）
+│   ├── regression.py               # OLS/WLS 回归（含标准化系数）
+│   ├── crosstabs.py                # Seen vs No Seen 交叉表分析
+│   ├── sample_extract.py           # 从 Full_Table 提取渠道/KPI 样本量用于核对
+│   ├── output.py                   # 输出主结果 Excel（调用 common_writers）
+│   ├── common_writers.py           # 各类 Excel 表格写入函数（描述统计、回归、因子、样本核对等）
+│   ├── workfile_io.py              # 填充 workfile 模板（预置格式的 Excel）
+│   └── ppt_export.py               # 将图表从 Excel 导出到 PPT（依赖 win32com）
+│
+└── 外部依赖：
+    - pandas, numpy, openpyxl, pyreadstat, statsmodels, scipy, win32com, tkinter
+
+
+

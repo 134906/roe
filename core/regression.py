@@ -158,6 +158,7 @@ def run_regression(df, dep_vars, ind_vars, weight_var=None, center=False):
             'var_names': list(params.index)
         }
 
+
         print(f"\n回归结果 (因变量 {dep}):")
         print(f"  R² = {model.rsquared:.4f}, 调整R² = {model.rsquared_adj:.4f}")
         print(f"  加权有效样本数 (总权重) = {sum_w:.2f}")

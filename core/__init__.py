@@ -11,6 +11,7 @@ from .workfile_io import fill_workfile
 import pandas as pd
 import numpy as np
 
+
 def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=None, log_callback=print, generate_ppt=True, ppt_template=None):
     # 第1步：加载配置
     log_callback("开始加载定义文件...")
@@ -220,42 +221,303 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
         desc_list.append(('Recoded KPIs', desc_d_y))
     if not desc_raw_x.empty:
         desc_list.append(('Original Channels', desc_raw_x))
-    if not desc_recoded_x.empty:   
+    if not desc_recoded_x.empty:
         desc_list.append(('Recoded Channels', desc_recoded_x))
 
     log_callback("描述统计完成")
 
-    # 第9步：样本量核对（基于全数据）
+    # ---- 第9步：样本量核对（支持 Full_Table 和 Data check 双来源） ----
     kpi_check_df = None
     channel_check_df = None
     success = False
+    source_flag = None
+
+    # ---- 定义解析 Data check 工作表的函数（内部） ----
+    def parse_data_check_blocks(def_path, log_callback):
+        """
+        从 Data check 工作表中解析 KPI 和渠道样本量。
+        KPI：表头找 count 列，若无则默认第5列（索引4）。
+        渠道：从第一个非 base 行开始读取，跳过 net，遇到包含 'other' 的行停止。
+        返回：kpi_df, channel_df_orig, channel_df_merged，每个均包含 'var_name', 'sample', 'table_name'
+        """
+        import re
+        try:
+            df_raw = pd.read_excel(def_path, sheet_name='Data_Check', header=None)
+        except Exception as e:
+            log_callback(f"无法读取 Data check 工作表：{e}")
+            return None, None, None
+
+        df_raw = df_raw.dropna(how='all')
+        log_callback(f"Data check 工作表读取成功，有效行数：{len(df_raw)}")
+
+        kpi_pattern = re.compile(r'\bkpi\b', re.I)
+        orig_pattern = re.compile(r'channel/merge前|channel before merge', re.I)
+        merged_pattern = re.compile(r'channel/merge后|channel after merge', re.I)
+
+        marker_rows = []
+        for idx, row in df_raw.iterrows():
+            a_val = str(row[0]).strip() if pd.notna(row[0]) else ''
+            if kpi_pattern.search(a_val):
+                marker_rows.append((idx, 'kpi'))
+                log_callback(f"行 {idx}: 识别为 KPI 标记 (内容: '{a_val}')")
+            elif orig_pattern.search(a_val):
+                marker_rows.append((idx, 'orig'))
+                log_callback(f"行 {idx}: 识别为 原始渠道 标记 (内容: '{a_val}')")
+            elif merged_pattern.search(a_val):
+                marker_rows.append((idx, 'merged'))
+                log_callback(f"行 {idx}: 识别为 合并渠道 标记 (内容: '{a_val}')")
+
+        if not marker_rows:
+            log_callback("未找到任何表头标记")
+            return None, None, None
+
+        max_idx = df_raw.index[-1]
+        blocks = []
+        for i, (marker_idx, block_type) in enumerate(marker_rows):
+            start = marker_idx + 1
+            end = max_idx if i + 1 == len(marker_rows) else marker_rows[i+1][0] - 1
+            end_actual = end
+            empty_run = 0
+            for idx in range(start, end + 1):
+                if idx not in df_raw.index:
+                    continue
+                row = df_raw.loc[idx]
+                is_empty = row.isnull().all() or all(str(v).strip() == '' for v in row)
+                if is_empty:
+                    empty_run += 1
+                    if empty_run >= 3:
+                        end_actual = idx - 3
+                        log_callback(f"  在行 {idx} 遇到连续三行空白，截断结束为 {end_actual}")
+                        break
+                else:
+                    empty_run = 0
+            if end_actual >= start:
+                blocks.append({'type': block_type, 'start': start, 'end': end_actual})
+                log_callback(f"块 {block_type}: 行 {start}-{end_actual}")
+            else:
+                log_callback(f"块 {block_type} 无有效数据，跳过")
+
+        kpi_data = None
+        channel_orig_data = None
+        channel_merged_data = None
+
+        for block in blocks:
+            btype = block['type']
+            start = block['start']
+            end = block['end']
+            log_callback(f"开始解析块 {btype} (行 {start}-{end})")
+
+            if btype == 'kpi':
+                header_row = df_raw.loc[start] if start in df_raw.index else None
+                sample_col = None
+                if header_row is not None:
+                    for col_idx, val in enumerate(header_row):
+                        if pd.isna(val):
+                            continue
+                        val_str = str(val).lower()
+                        if any(keyword in val_str for keyword in ['count', '样本量', 'sample']):
+                            sample_col = col_idx
+                            log_callback(f"  KPI 表找到 count 列：索引 {col_idx}, 值 '{val}'")
+                            break
+                if sample_col is None:
+                    sample_col = 4
+                    log_callback(f"  KPI 表未找到 count 列，默认使用列索引 {sample_col} (第5列)")
+
+                rows = []
+                for idx in range(start + 1, end + 1):
+                    if idx not in df_raw.index:
+                        continue
+                    row = df_raw.loc[idx]
+                    var_name = str(row[0]).strip() if pd.notna(row[0]) else ''
+                    if not var_name:
+                        continue
+                    sample_val = row[sample_col] if sample_col < len(row) else np.nan
+                    sample = pd.to_numeric(sample_val, errors='coerce')
+                    if pd.isna(sample) or sample == 0:
+                        log_callback(f"  KPI {var_name} 样本量无效 ({sample_val})，跳过")
+                        continue
+                    rows.append({'var_name': var_name, 'sample': sample, 'table_name': 'KPI'})
+                    log_callback(f"  有效 KPI: {var_name} -> {sample}")
+                if rows:
+                    kpi_data = pd.DataFrame(rows)
+                    log_callback(f"KPI 表解析完成，共 {len(kpi_data)} 个有效 KPI")
+                else:
+                    kpi_data = pd.DataFrame(columns=['var_name', 'sample', 'table_name'])
+                    log_callback("KPI 表无有效数据")
+
+            elif btype in ('orig', 'merged'):
+                base_idx = None
+                for idx in range(start, end + 1):
+                    if idx not in df_raw.index:
+                        continue
+                    row = df_raw.loc[idx]
+                    a_val = str(row[0]).strip() if pd.notna(row[0]) else ''
+                    if 'base' in a_val.lower():
+                        base_idx = idx
+                        log_callback(f"  找到第一个 base 行：行 {idx}, 内容 '{a_val}'")
+                        break
+                if base_idx is None:
+                    log_callback(f"块 {btype} 未找到 base 行，跳过")
+                    continue
+
+                read_start = base_idx + 1
+                for idx in range(base_idx + 1, end + 1):
+                    if idx not in df_raw.index:
+                        continue
+                    row = df_raw.loc[idx]
+                    a_val = str(row[0]).strip() if pd.notna(row[0]) else ''
+                    if 'base' not in a_val.lower():
+                        read_start = idx
+                        log_callback(f"  从行 {idx} 开始读取（非 base）")
+                        break
+
+                table_name = 'Channel/merge前' if btype == 'orig' else 'Channel/merge后'
+                rows = []
+                for idx in range(read_start, end + 1):
+                    if idx not in df_raw.index:
+                        continue
+                    row = df_raw.loc[idx]
+                    var_name = str(row[0]).strip() if pd.notna(row[0]) else ''
+                    if not var_name:
+                        continue
+                    if 'other' in var_name.lower():
+                        log_callback(f"  遇到 other 行，停止：{var_name}")
+                        break
+                    if 'net' in var_name.lower():
+                        log_callback(f"  跳过 net 行：{var_name}")
+                        continue
+                    sample_val = row[1] if len(row) > 1 else np.nan
+                    sample = pd.to_numeric(sample_val, errors='coerce')
+                    if pd.isna(sample) or sample == 0:
+                        log_callback(f"  渠道 {var_name} 样本量无效 ({sample_val})，跳过")
+                        continue
+                    rows.append({'var_name': var_name, 'sample': sample, 'table_name': table_name})
+                    log_callback(f"  有效渠道：{var_name} -> {sample}")
+
+                if rows:
+                    df_block = pd.DataFrame(rows)
+                    log_callback(f"渠道表 {btype} 解析完成，共 {len(df_block)} 个有效渠道")
+                    if btype == 'orig':
+                        channel_orig_data = df_block
+                    else:
+                        channel_merged_data = df_block
+                else:
+                    log_callback(f"渠道表 {btype} 无有效数据")
+
+        if kpi_data is None:
+            kpi_data = pd.DataFrame(columns=['var_name', 'sample', 'table_name'])
+        return kpi_data, channel_orig_data, channel_merged_data
+
+    # ---- 主逻辑：优先 Full_Table，失败则 Data check ----
+    kpi_df = None
+    channel_df_orig = None
+    channel_df_merged = None
+
     try:
-        log_callback("开始样本量核对...")
         full_table_df = pd.read_excel(def_path, sheet_name='Full_Table', header=None)
         if full_table_df.empty:
-            log_callback("Full_Table 为空，跳过样本量检查")
-        else:
-            brands, channel_df, kpi_df = extract_samples_from_full_table(
-                full_table_df, config, name_label_map,
-                filter_values=filter_values,
-                var_to_value_labels=var_to_value_labels,
-                filter_type=filter_type,
-                log_callback=log_callback
-            )
-            x_vars_for_check = config['x_vars'] if x_var_merge else quasi_orig_x
-            kpi_check_df, channel_check_df, success = perform_sample_check(
-                desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, name_label_map,
-                config['y_vars'], x_vars_for_check, y_var_recode=y_var_recode
-            )
-            if success:
-                log_callback("样本量校对成功")
-            else:
-                log_callback("样本量校对失败，请检查差异")
+            raise ValueError("Full_Table 工作表为空")
+
+        brands, channel_df, kpi_df = extract_samples_from_full_table(
+            full_table_df, config, name_label_map,
+            filter_values=filter_values,
+            var_to_value_labels=var_to_value_labels,
+            filter_type=filter_type,
+            log_callback=log_callback
+        )
+        source_flag = 'full_table'
+        log_callback("样本量核对来源：Full_Table")
     except Exception as e:
-        log_callback(f"样本量核对过程中发生错误: {e}")
-        kpi_check_df = None
-        channel_check_df = None
+        log_callback(f"Full_Table 提取样本量失败：{e}，尝试备用来源 Data check...")
+        kpi_df, channel_df_orig, channel_df_merged = parse_data_check_blocks(def_path, log_callback)
+        if kpi_df is not None and not kpi_df.empty:
+            source_flag = 'data_check'
+            log_callback("样本量核对来源：Data check")
+        else:
+            source_flag = None
+            log_callback("Data check 数据不完整，跳过样本量核对")
+            kpi_df = channel_df_orig = channel_df_merged = None
+
+    # ---- 执行核对 ----
+    if source_flag is not None and kpi_df is not None and not kpi_df.empty:
+        try:
+            # 先准备一个空的结果容器
+            all_kpi_check = None
+            all_channel_check = []
+            all_success_flags = []
+
+            if source_flag == 'full_table':
+                # Full_Table：单次调用即可
+                kpi_check_df, channel_check_df, success = perform_sample_check(
+                    desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, name_label_map,
+                    config['y_vars'], quasi_orig_x,
+                    y_var_recode=y_var_recode,
+                    source=source_flag
+                )
+            else:  # data_check
+                # ---- 先做 KPI 核对（只做一次） ----
+                kpi_check_df, _, _ = perform_sample_check(
+                    desc_raw_y, desc_d_y, desc_raw_x, None, kpi_df, name_label_map,
+                    config['y_vars'], quasi_orig_x,
+                    y_var_recode=y_var_recode,
+                    source=source_flag,
+                    skip_channel=True   # 新增参数，跳过渠道核对
+                )
+                all_kpi_check = kpi_check_df
+
+                # ---- 渠道核对（根据 merge 状态决定几个表） ----
+                channel_dfs_to_check = []
+                if x_var_merge:
+                    # 有 merge：两个渠道表都要核对
+                    if channel_df_merged is not None and not channel_df_merged.empty:
+                        channel_dfs_to_check.append(channel_df_merged)
+                    if channel_df_orig is not None and not channel_df_orig.empty:
+                        channel_dfs_to_check.append(channel_df_orig)
+                else:
+                    # 无 merge：只核对第二个表（即 orig 表）
+                    if channel_df_orig is not None and not channel_df_orig.empty:
+                        channel_dfs_to_check.append(channel_df_orig)
+
+                for ch_df in channel_dfs_to_check:
+                    _, ch_check, ch_success = perform_sample_check(
+                        desc_raw_y, desc_d_y, desc_raw_x, ch_df, None, name_label_map,
+                        config['y_vars'], quasi_orig_x,
+                        y_var_recode=y_var_recode,
+                        source=source_flag,
+                        skip_kpi=True   # 跳过 KPI 核对
+                    )
+                    if ch_check is not None and not ch_check.empty:
+                        all_channel_check.append(ch_check)
+                    all_success_flags.append(ch_success)
+
+                # ---- 合并结果 ----
+                if all_kpi_check is not None and not all_kpi_check.empty:
+                    channel_check_df = pd.concat(all_channel_check, ignore_index=True) if all_channel_check else pd.DataFrame()
+                else:
+                    channel_check_df = pd.concat(all_channel_check, ignore_index=True) if all_channel_check else pd.DataFrame()
+                # 合并 KPI 和渠道的差异，重新判定 success
+                all_diffs = []
+                if all_kpi_check is not None and not all_kpi_check.empty:
+                    all_diffs.extend(all_kpi_check['Diff'].dropna().tolist())
+                if channel_check_df is not None and not channel_check_df.empty:
+                    all_diffs.extend(channel_check_df['Diff'].dropna().tolist())
+                success = all(abs(d) < 1e-6 for d in all_diffs) if all_diffs else False
+                kpi_check_df = all_kpi_check if all_kpi_check is not None else pd.DataFrame()
+
+            log_callback(f"样本量核对完成，整体校验结果：{'成功' if success else '存在差异'}")
+        except Exception as e:
+            log_callback(f"样本量核对过程发生异常：{e}，将跳过核对结果")
+            import traceback
+            log_callback(traceback.format_exc())
+            kpi_check_df = pd.DataFrame()   # 改为空 DataFrame
+            channel_check_df = pd.DataFrame()
+            success = False
+    else:
+        kpi_check_df = pd.DataFrame()
+        channel_check_df = pd.DataFrame()
         success = False
+        log_callback("样本量核对跳过（无可用的样本量数据）")
+    log_callback("样本量核对步骤结束，继续执行后续分析...")
 
     # 第10步：回归分析 + 收集描述统计信息
     reg_results = {}
@@ -384,7 +646,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
             'y_orig_vars': y_orig_vars,
             'y_recoded_vars': y_recoded_vars,
             'x_vars': x_vars_for_desc,
-            'dep_vars': dep_vars,        
+            'dep_vars': dep_vars,
             'ind_vars': ind_vars_resolved,
             'recoded_x_vars': recoded_x_vars_list
         })
@@ -404,7 +666,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
         weight_series=weight_series
     )
 
-        # 判断是否有回归使用了筛选
+    # 判断是否有回归使用了筛选
     has_filtered_reg = any(info['filter_desc'] is not None for info in reg_descriptives_info)
 
     # 第12步：保存结果
@@ -429,7 +691,8 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
         factor_target=config.get('factor_target'),
         config=config,
         reg_descriptives_info=reg_descriptives_info,
-        has_filtered_reg=has_filtered_reg
+        has_filtered_reg=has_filtered_reg,
+        sample_check_source=source_flag
     )
     log_callback(f"分析完成！结果保存至: {output_path}")
 
@@ -460,7 +723,8 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
                 factor_corr=factor_corr,
                 log_callback=log_callback,
                 reg_descriptives_info=reg_descriptives_info,
-                has_filtered_reg=has_filtered_reg
+                has_filtered_reg=has_filtered_reg,
+                sample_check_source=source_flag
             )
             log_callback(f"Workfile 填充完成！保存至: {workfile_output}")
         except Exception as e:
@@ -468,7 +732,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
             import traceback
             log_callback(traceback.format_exc())
 
-            # 第14步：生成 PPT（如果启用）
+    # 第14步：生成 PPT（如果启用）
     if generate_ppt and workfile_output:
         log_callback("开始生成 PPT...")
         try:

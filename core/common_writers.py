@@ -5,6 +5,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import PatternFill, Font
 from openpyxl.formatting.rule import ColorScaleRule
 from .descriptives import get_descriptives
+from openpyxl.formatting.rule import FormulaRule
 
 # ---------- 内部辅助函数 ----------
 def _write_num(cell, val, fmt=None):
@@ -62,45 +63,78 @@ def write_descriptives_to_sheet(ws, desc_list):
 # ================================================================
 # 2. Sample Check（样本量核对）
 # ================================================================
-def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success):
+def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success, source=None):
     row = 1
+    # 根据 source 确定样本量列名
+    if source == 'data_check':
+        sample_col_name = 'Data_Check样本量'
+        empty_msg = "Data_Check 数据为空或未提供，已跳过样本量检查"
+    else:
+        sample_col_name = 'Full_Table样本量'
+        empty_msg = "Full_Table 为空或未提供，已跳过样本量检查"
+
     # 如果数据为空，显示提示并返回
     if (kpi_check_df is None or kpi_check_df.empty) and (channel_check_df is None or channel_check_df.empty):
         ws.cell(row=row, column=1, value="样本量核对")
         row += 1
-        ws.cell(row=row, column=1, value="Full_Table 为空或未提供，已跳过样本量检查")
+        ws.cell(row=row, column=1, value=empty_msg)
         return
 
+    # ---- KPI 部分 ----
     ws.cell(row=row, column=1, value='KPI 样本量校对')
     row += 1
-    headers = ['表名', 'KPI标签', 'Full_Table样本量', 'Mean*N (描述统计)', '差异']
+    headers = ['表名', 'KPI标签', sample_col_name, 'Mean*N (描述统计)', '差异']
     for col, h in enumerate(headers, start=1):
         ws.cell(row=row, column=col, value=h)
     row += 1
-    for _, row_data in kpi_check_df.iterrows():
-        ws.cell(row=row, column=1, value=row_data['TableName'])
-        ws.cell(row=row, column=2, value=row_data['KPI_Label'])
-        ws.cell(row=row, column=3, value=row_data['FullTable_Sample'])
-        ws.cell(row=row, column=4, value=row_data['Calc_Mean*N'])
-        ws.cell(row=row, column=5, value=row_data['Diff'])
-        row += 1
+    if kpi_check_df is not None and not kpi_check_df.empty:
+        for _, row_data in kpi_check_df.iterrows():
+            ws.cell(row=row, column=1, value=row_data['TableName'])
+            ws.cell(row=row, column=2, value=row_data['KPI_Label'])
+            ws.cell(row=row, column=3, value=row_data['FullTable_Sample'])
+            ws.cell(row=row, column=4, value=row_data['Calc_Mean*N'])
+            ws.cell(row=row, column=5, value=row_data['Diff'])
+            row += 1
     row += 1
+
+    # ---- 渠道部分 ----
     ws.cell(row=row, column=1, value='渠道样本量校对')
     row += 1
-    headers = ['表名', '渠道名', 'Full_Table样本量', 'Mean*N (描述统计)', '差异']
+    headers = ['表名', '渠道名', sample_col_name, 'Mean*N (描述统计)', '差异']
     for col, h in enumerate(headers, start=1):
         ws.cell(row=row, column=col, value=h)
     row += 1
-    for _, row_data in channel_check_df.iterrows():
-        ws.cell(row=row, column=1, value=row_data['TableName'])
-        ws.cell(row=row, column=2, value=row_data['Channel'])
-        ws.cell(row=row, column=3, value=row_data['FullTable_Sample'])
-        ws.cell(row=row, column=4, value=row_data['Calc_Mean*N'])
-        ws.cell(row=row, column=5, value=row_data['Diff'])
-        row += 1
+    if channel_check_df is not None and not channel_check_df.empty:
+        for _, row_data in channel_check_df.iterrows():
+            ws.cell(row=row, column=1, value=row_data['TableName'])
+            ws.cell(row=row, column=2, value=row_data['Channel'])
+            ws.cell(row=row, column=3, value=row_data['FullTable_Sample'])
+            ws.cell(row=row, column=4, value=row_data['Calc_Mean*N'])
+            ws.cell(row=row, column=5, value=row_data['Diff'])
+            row += 1
     row += 1
+
     ws.cell(row=row, column=1, value='样本量校对结果：')
     ws.cell(row=row, column=2, value='成功' if success else '失败（存在差异）')
+
+    # ---- 添加条件格式到差异列（第5列） ----
+    # 确定数据范围：KPI 和渠道的差异列都在第5列，行从第4行开始到当前行-1
+    diff_start_row = 4  # 表头在第3行，数据从第4行开始
+    diff_end_row = row - 2  # 最后一行数据（结果行之前）
+    if diff_end_row >= diff_start_row:
+        col_letter = get_column_letter(5)  # E列
+        range_str = f'{col_letter}{diff_start_row}:{col_letter}{diff_end_row}'
+        try:
+            rule = ColorScaleRule(
+                start_type='min', start_color='F8696B',   # 红
+                mid_type='percentile', mid_value=50, mid_color='FFEB84',  # 黄
+                end_type='max', end_color='63BE7B'        # 绿
+            )
+            ws.conditional_formatting.add(range_str, rule)
+        except Exception:
+            pass
+
+    # 调整列宽
     for col in ws.columns:
         max_len = 0
         for cell in col:

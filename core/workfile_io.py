@@ -17,7 +17,7 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
                   reg_results, qd_stats, qd_desc, qd_means, channel_means_dict,
                   diff_table, listwise_n, kpi_check_df, channel_check_df,
                   sample_check_success, factor_corr, name_label_map=None, log_callback=print,
-                  reg_descriptives_info=None, has_filtered_reg=False):
+                  reg_descriptives_info=None, has_filtered_reg=False,sample_check_source=None):
     log_callback("开始填充 workfile 模板...")
     
     # ---- 处理文件被占用问题 ----
@@ -32,7 +32,7 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
         shutil.copy2(workfile_path, tmp_path)
         wb = openpyxl.load_workbook(tmp_path)
     
-    # ---- 后续填充操作（与原有代码相同） ----
+    # ---- 后续填充操作 ----
     def get_or_create_sheet(wb, name):
         return wb[name] if name in wb.sheetnames else wb.create_sheet(name)
 
@@ -100,16 +100,15 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
         log_callback("  seenvsnoseen 填充完成")
 
     # 7. Sample_Check
-    if kpi_check_df is not None and channel_check_df is not None:
-        ws = get_or_create_sheet(wb, 'Sample_Check')
-        write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, sample_check_success)
-        log_callback("  Sample_Check 填充完成")
+    ws = get_or_create_sheet(wb, 'Sample_Check')
+    write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, sample_check_success, source=sample_check_source)
+    log_callback("  Sample_Check 填充完成")
 
     # 保存到输出路径
     wb.save(output_workfile_path)
     wb.close()
     
-    # 清理临时文件（如果使用了）
+    # 清理临时文件
     if tmp_path and os.path.exists(tmp_path):
         try:
             os.unlink(tmp_path)

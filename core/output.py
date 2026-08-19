@@ -17,7 +17,7 @@ def save_results(output_path, desc_list, loadings, score_coeff,
                  listwise_n=None, country='', fa_extra=None, kpi_check_df=None,
                  channel_check_df=None, sample_check_success=False,
                  factor_target=None, config=None,
-                 reg_descriptives_info=None, has_filtered_reg=False):
+                 reg_descriptives_info=None, has_filtered_reg=False,sample_check_source=None):
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         # Descriptives
         if desc_list:
@@ -25,9 +25,8 @@ def save_results(output_path, desc_list, loadings, score_coeff,
             write_descriptives_to_sheet(ws, desc_list)
 
         # Sample Check
-        if kpi_check_df is not None or channel_check_df is not None:
-            ws = writer.book.create_sheet('Sample_Check')
-            write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, sample_check_success)
+        ws = writer.book.create_sheet('Sample_Check')
+        write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, sample_check_success, source=sample_check_source)
 
         # CFA Results
         if fa_extra is not None:

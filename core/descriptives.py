@@ -66,6 +66,12 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
             s = str(s)
         return re.sub(r'[\s_\-]+', '', s).lower()
 
+    # 辅助函数：将 Mean * N 结果取整（四舍五入），若存在 NaN 则返回 NaN
+    def _compute_calc_sample(mean_val, n_val):
+        if pd.isna(mean_val) or pd.isna(n_val):
+            return np.nan
+        return int(round(mean_val * n_val))
+
     kpi_check_df = pd.DataFrame()
     channel_check_df = pd.DataFrame()
     success = False
@@ -74,7 +80,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
     if not skip_kpi and kpi_df is not None and not kpi_df.empty:
         kpi_check_rows = []
         if source == 'full_table':
-            # Full_Table 原逻辑不变（使用 row_kpi.kpi_label）
+            # Full_Table 原逻辑
             for i, (row_kpi, y_var) in enumerate(zip(kpi_df.itertuples(), y_vars)):
                 if y_var_recode:
                     lookup_var = f'd{y_var}'
@@ -88,7 +94,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                 else:
                     mean_val = n_val = np.nan
                     log_callback(f"警告：变量 {lookup_var} 不在 {'重编码' if y_var_recode else '原始'} KPIs 描述统计中")
-                calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                calc_sample = _compute_calc_sample(mean_val, n_val)
                 full_sample = row_kpi.sample
                 diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                 if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -128,7 +134,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                     else:
                         mean_val = n_val = np.nan
                         log_callback(f"警告：变量 {lookup_var} 不在 {'重编码' if y_var_recode else '原始'} KPIs 描述统计中")
-                    calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                    calc_sample = _compute_calc_sample(mean_val, n_val)
                     full_sample = row_kpi.sample
                     diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                     if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -168,7 +174,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                     else:
                         mean_val = n_val = np.nan
                         log_callback(f"警告：变量 {lookup_var} 不在 {'重编码' if y_var_recode else '原始'} KPIs 描述统计中")
-                    calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                    calc_sample = _compute_calc_sample(mean_val, n_val)
                     full_sample = row_kpi.sample
                     diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                     if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -197,7 +203,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                 else:
                     mean_val = n_val = np.nan
                     log_callback(f"警告：变量 {lookup_var} 不在 {'重编码' if y_var_recode else '原始'} KPIs 描述统计中")
-                calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                calc_sample = _compute_calc_sample(mean_val, n_val)
                 full_sample = row_kpi['sample']
                 diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                 if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -224,7 +230,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                 else:
                     mean_val = n_val = np.nan
                     log_callback(f"警告：变量 {x_var} 不在原始渠道描述统计中")
-                calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                calc_sample = _compute_calc_sample(mean_val, n_val)
                 full_sample = row_ch.sample
                 diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                 if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -258,7 +264,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                     else:
                         mean_val = n_val = np.nan
                         log_callback(f"警告：变量 {matched_var} 不在原始渠道描述统计中")
-                    calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                    calc_sample = _compute_calc_sample(mean_val, n_val)
                     full_sample = row_ch.sample
                     diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                     if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -292,7 +298,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                     else:
                         mean_val = n_val = np.nan
                         log_callback(f"警告：变量 {matched_var} 不在原始渠道描述统计中")
-                    calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                    calc_sample = _compute_calc_sample(mean_val, n_val)
                     full_sample = row_ch.sample
                     diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                     if not pd.isna(diff) and abs(diff) < 1e-10:
@@ -315,7 +321,7 @@ def perform_sample_check(desc_raw_y, desc_d_y, desc_raw_x, channel_df, kpi_df, n
                 else:
                     mean_val = n_val = np.nan
                     log_callback(f"警告：变量 {x_var} 不在原始渠道描述统计中")
-                calc_sample = mean_val * n_val if not pd.isna(mean_val) and not pd.isna(n_val) else np.nan
+                calc_sample = _compute_calc_sample(mean_val, n_val)
                 full_sample = row_ch['sample']
                 diff = calc_sample - full_sample if not pd.isna(calc_sample) and not pd.isna(full_sample) else np.nan
                 if not pd.isna(diff) and abs(diff) < 1e-10:

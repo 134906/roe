@@ -65,7 +65,6 @@ def write_descriptives_to_sheet(ws, desc_list):
 # ================================================================
 def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success, source=None):
     row = 1
-    # 根据 source 确定样本量列名
     if source == 'data_check':
         sample_col_name = 'Data_Check样本量'
         empty_msg = "Data_Check 数据为空或未提供，已跳过样本量检查"
@@ -73,14 +72,13 @@ def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success, sou
         sample_col_name = 'Full_Table样本量'
         empty_msg = "Full_Table 为空或未提供，已跳过样本量检查"
 
-    # 如果数据为空，显示提示并返回
     if (kpi_check_df is None or kpi_check_df.empty) and (channel_check_df is None or channel_check_df.empty):
         ws.cell(row=row, column=1, value="样本量核对")
         row += 1
         ws.cell(row=row, column=1, value=empty_msg)
         return
 
-    # ---- KPI 部分 ----
+    # ---- KPI ----
     ws.cell(row=row, column=1, value='KPI 样本量校对')
     row += 1
     headers = ['表名', 'KPI标签', sample_col_name, 'Mean*N (描述统计)', '差异']
@@ -97,7 +95,7 @@ def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success, sou
             row += 1
     row += 1
 
-    # ---- 渠道部分 ----
+    # ---- 渠道 ----
     ws.cell(row=row, column=1, value='渠道样本量校对')
     row += 1
     headers = ['表名', '渠道名', sample_col_name, 'Mean*N (描述统计)', '差异']
@@ -117,18 +115,24 @@ def write_sample_check_to_sheet(ws, kpi_check_df, channel_check_df, success, sou
     ws.cell(row=row, column=1, value='样本量校对结果：')
     ws.cell(row=row, column=2, value='成功' if success else '失败（存在差异）')
 
-    # ---- 添加条件格式到差异列（第5列） ----
-    # 确定数据范围：KPI 和渠道的差异列都在第5列，行从第4行开始到当前行-1
-    diff_start_row = 4  # 表头在第3行，数据从第4行开始
-    diff_end_row = row - 2  # 最后一行数据（结果行之前）
-    if diff_end_row >= diff_start_row:
-        col_letter = get_column_letter(5)  # E列
-        range_str = f'{col_letter}{diff_start_row}:{col_letter}{diff_end_row}'
+    # ---- 条件格式：动态确定差异列的范围 ----
+    diff_col = 5  # E列
+    min_row = None
+    max_row = None
+    for r in range(1, ws.max_row + 1):
+        cell_val = ws.cell(row=r, column=diff_col).value
+        if cell_val is not None and cell_val != '':
+            if min_row is None:
+                min_row = r
+            max_row = r
+    if min_row is not None and max_row is not None:
+        col_letter = get_column_letter(diff_col)
+        range_str = f'{col_letter}{min_row}:{col_letter}{max_row}'
         try:
             rule = ColorScaleRule(
-                start_type='min', start_color='F8696B',   # 红
-                mid_type='percentile', mid_value=50, mid_color='FFEB84',  # 黄
-                end_type='max', end_color='63BE7B'        # 绿
+                start_type='min', start_color='F8696B',
+                mid_type='percentile', mid_value=50, mid_color='FFEB84',
+                end_type='max', end_color='63BE7B'
             )
             ws.conditional_formatting.add(range_str, rule)
         except Exception:

@@ -1,9 +1,97 @@
 import pyreadstat
 import pandas as pd
 import numpy as np
+import re
 
 # 全局映射字典（小写清理后的列名 -> 实际列名）
 _lower_to_col = {}
+
+
+def parse_filter_expr(expr, df, var_to_value_labels, log_callback=print):
+    """
+    解析筛选表达式，返回过滤后的 DataFrame。
+    表达式示例：'wave=3,4; filter=5,6' 或 'wave=2 & filter=4,5'
+    支持多个条件 AND 关系。
+    """
+    if not expr or not expr.strip():
+        return df
+
+    # 分割条件：优先 ; 或 &，若无但多个等号则按等号分割
+    parts = None
+    if ';' in expr or '&' in expr:
+        parts = re.split(r'[;&]', expr)
+    elif expr.count('=') >= 2:
+        # 按等号位置分割，但需要保留变量名和值，这里简单处理：先按等号分割，再组合
+        # 更可靠：用正则匹配所有 var=values 模式
+        parts = re.findall(r'([^=;&]+)=([^=;&]+)', expr)
+        if parts:
+            parts = [f"{var}={vals}" for var, vals in parts]
+    else:
+        # 单条件
+        parts = [expr]
+
+    conditions = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if '=' not in part:
+            log_callback(f"警告：筛选条件 '{part}' 缺少 '='，跳过")
+            continue
+        var, vals_str = part.split('=', 1)
+        var = var.strip()
+        vals = [v.strip() for v in vals_str.split(',') if v.strip()]
+        if not vals:
+            log_callback(f"警告：变量 '{var}' 无有效值，跳过")
+            continue
+        conditions.append((var, vals))
+
+    if not conditions:
+        return df
+
+    # 依次应用每个条件（AND）
+    for var, vals in conditions:
+        if var not in df.columns:
+            log_callback(f"警告：变量 '{var}' 不在数据中，跳过该条件")
+            continue
+        col_dtype = df[var].dtype
+        converted_vals = []
+
+        # 若有值标签，先尝试标签匹配
+        if var in var_to_value_labels:
+            label_to_value = {str(v).strip(): k for k, v in var_to_value_labels[var].items()}
+            for v in vals:
+                if v in label_to_value:
+                    converted_vals.append(label_to_value[v])
+                else:
+                    # 尝试转为数值
+                    try:
+                        if 'int' in str(col_dtype):
+                            converted_vals.append(int(v))
+                        elif 'float' in str(col_dtype):
+                            converted_vals.append(float(v))
+                        else:
+                            converted_vals.append(v)
+                    except ValueError:
+                        converted_vals.append(v)
+        else:
+            # 无值标签，直接转换类型
+            for v in vals:
+                try:
+                    if 'int' in str(col_dtype):
+                        converted_vals.append(int(v))
+                    elif 'float' in str(col_dtype):
+                        converted_vals.append(float(v))
+                    else:
+                        converted_vals.append(v)
+                except ValueError:
+                    converted_vals.append(v)
+
+        converted_vals = list(dict.fromkeys(converted_vals))  # 去重
+        df = df[df[var].isin(converted_vals)].copy()
+        log_callback(f"已过滤：保留 {var} in {converted_vals}，剩余样本数 {len(df)}")
+
+    return df
 
 def get_name_label_mapping(meta):
     name_list = meta.column_names
@@ -37,75 +125,67 @@ def build_var_to_value_labels(meta):
                     var_to_vl[var] = value_labels[sorted_keys[idx]]
     return var_to_vl
 
-def read_spss(file_path, filter_var=None, filter_val=None, filter_type='numeric'):
+def read_spss(file_path, filter_expr=None):
+    """
+    读取 SPSS .sav 文件，自动尝试多种编码，避免因编码问题导致读取失败。
+    支持常见的 Unicode、西欧、中文（GBK/Big5）等编码。
+    """
     global _lower_to_col
-    df, meta = pyreadstat.read_sav(file_path)
+
+    # ---------- 扩展编码列表 ----------
+    # 顺序按常用性和兼容性排列：优先 UTF-8 系列，其次西欧编码，再次中文编码
+    encodings = [
+        'utf-8',           # 标准 UTF-8
+        'utf-8-sig',       # 带 BOM 的 UTF-8
+        'latin1',          # ISO-8859-1（西欧）
+        'cp1252',          # Windows 西欧（与 latin1 相似但稍有不同）
+        'cp437',           # DOS 拉丁字母（一些旧 SPSS 文件使用）
+        'cp850',           # 西欧（DOS）
+        'gbk',             # 简体中文（GB2312/GBK）
+        'gb2312',          # 简体中文
+        'big5',            # 繁体中文
+        'cp936',           # 简体中文（Windows）
+        'cp950',           # 繁体中文（Windows）
+        'shift-jis',       # 日文
+        'euc-kr',          # 韩文
+    ]
+
+    df = None
+    meta = None
+    last_exception = None
+
+    for enc in encodings:
+        try:
+            df, meta = pyreadstat.read_sav(file_path, encoding=enc)
+            print(f"✅ SPSS 文件成功使用编码 '{enc}' 读取")
+            break
+        except UnicodeDecodeError as e:
+            last_exception = e
+            print(f"编码 '{enc}' 失败，尝试下一个...")
+            continue
+        except Exception as e:
+            # 捕获其他异常（如文件损坏、权限等），记录下来但继续尝试其他编码
+            last_exception = e
+            print(f"使用编码 '{enc}' 时发生非编码异常: {e}，尝试下一个...")
+            continue
+
+    if df is None:
+        # 所有编码尝试均失败，抛出明确异常
+        raise UnicodeDecodeError(
+            f"无法使用任何已知编码读取 SPSS 文件。最后错误：{last_exception}"
+        )
+
     name_label_map = get_name_label_mapping(meta)
+    var_to_value_labels = build_var_to_value_labels(meta)
+
     raw_total = meta.number_rows
     print(f"SPSS原始文件总样本量：{raw_total}")
 
-    var_to_value_labels = build_var_to_value_labels(meta)
+    # 若提供筛选表达式，进行过滤
+    if filter_expr and isinstance(filter_expr, str) and filter_expr.strip():
+        df = parse_filter_expr(filter_expr, df, var_to_value_labels, log_callback=print)
 
-    if filter_var and filter_type == 'category' and filter_val is not None and filter_var in df.columns:
-        value_labels = var_to_value_labels.get(filter_var, {})
-        if value_labels:
-            label_to_value = {str(v).strip(): k for k, v in value_labels.items()}
-            def convert_val(v):
-                try:
-                    num = int(v) if v.isdigit() else float(v)
-                    return num
-                except ValueError:
-                    pass
-                if v in label_to_value:
-                    return label_to_value[v]
-                return v
-            if isinstance(filter_val, list):
-                filter_val = [convert_val(v) for v in filter_val]
-            else:
-                filter_val = convert_val(filter_val)
-            print(f"转换后的筛选值：{filter_val}")
-        else:
-            print(f"警告：变量 '{filter_var}' 声明为分类变量，但无值标签，无法转换筛选值")
-
-    if filter_var and filter_type == 'category' and filter_var in var_to_value_labels:
-        print(f"变量 '{filter_var}' 的值标签：{var_to_value_labels[filter_var]}")
-    elif filter_var and filter_type == 'category':
-        print(f"变量 '{filter_var}' 没有值标签或未找到（但被声明为 category）")
-
-    if filter_var and filter_val is not None and filter_var in df.columns:
-        col_dtype = df[filter_var].dtype
-        if isinstance(filter_val, list):
-            converted_vals = []
-            for v in filter_val:
-                if isinstance(v, str):
-                    try:
-                        if 'int' in str(col_dtype):
-                            v = int(v)
-                        elif 'float' in str(col_dtype):
-                            v = float(v)
-                    except ValueError:
-                        pass
-                converted_vals.append(v)
-            df = df[df[filter_var].isin(converted_vals)].copy()
-            print(f"已过滤：保留 {filter_var} in {converted_vals}，过滤后剩余样本数 {len(df)}")
-        else:
-            if isinstance(filter_val, str):
-                try:
-                    if 'int' in str(col_dtype):
-                        filter_val = int(filter_val)
-                    elif 'float' in str(col_dtype):
-                        filter_val = float(filter_val)
-                except ValueError:
-                    pass
-            df = df[df[filter_var] == filter_val].copy()
-            print(f"已过滤：保留 {filter_var}={filter_val}，过滤后剩余样本数 {len(df)}")
-    else:
-        if filter_var and filter_var not in df.columns:
-            print(f"警告：筛选变量 '{filter_var}' 不在数据中，未进行筛选")
-        elif filter_val is None:
-            print("未设置筛选值，保留全部样本")
-
-    # 初始化大小写映射（清理列名中的空格）
+    # 更新全局大小写映射
     _lower_to_col = {col.strip().lower(): col for col in df.columns}
     print(f"✅ 数据列名（前10个）: {df.columns[:10].tolist()}")
     return df, meta, name_label_map, var_to_value_labels

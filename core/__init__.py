@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from .config import load_definition
-from .data_io import read_spss, recode_variables, merge_variables, prepare_weight, _lower_to_col
+from .data_io import read_spss, recode_variables, merge_variables, prepare_weight, _lower_to_col, parse_filter_expr
 from .descriptives import get_descriptives, perform_sample_check
 from .factor_analysis import perform_factor_analysis
 from .regression import run_regression, parse_factor_indicator
@@ -17,23 +17,15 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
     log_callback("开始加载定义文件...")
     config = load_definition(def_path)
 
-    filter_var = config.get('filter_var', '')
-    filter_type = config.get('filter_type', 'numeric')
-    filter_val_raw = config.get('filter_val', None)
-    if filter_val_raw is not None:
-        filter_val_str = str(filter_val_raw).strip()
-        if filter_val_str:
-            filter_values = [v.strip() for v in filter_val_str.split(',') if v.strip()]
-        else:
-            filter_values = []
-    else:
-        filter_values = []
-    log_callback(f"筛选参数：变量='{filter_var}'，值={filter_values}，类型='{filter_type}'")
+    filter_expr = config.get('filter_expr', '')
+    log_callback(f"筛选表达式：{filter_expr}")
 
-    # 第2步：读取SPSS数据
+    # 第2步：读取SPSS数据（仅传入 filter_expr）
     log_callback("读取SPSS数据...")
-    filter_val_for_spss = filter_values if len(filter_values) > 1 else (filter_values[0] if filter_values else None)
-    df, meta, name_label_map, var_to_value_labels = read_spss(spss_path, filter_var, filter_val_for_spss, filter_type)
+    df, meta, name_label_map, var_to_value_labels = read_spss(
+        spss_path,
+        filter_expr=filter_expr
+    )
     log_callback(f"数据读取成功，样本数: {len(df)}")
 
     # ---- 定义解析函数（加强版，兜底遍历列） ----
@@ -67,8 +59,6 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
 
     if config.get('weight_var'):
         config['weight_var'] = resolve_var(config['weight_var']) or config['weight_var']
-    if config.get('filter_var'):
-        config['filter_var'] = resolve_var(config['filter_var']) or config['filter_var']
 
     # 第3步：X 变量合并
     y_var_recode = config.get('y_var_recode', True)
@@ -89,9 +79,16 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
 
     # 权重预处理
     weight_var = config.get('weight_var', '')
-    weight_series, weight_valid_mask = prepare_weight(df, weight_var, log_callback)
-    if weight_series is not None:
-        log_callback("权重变量已使用")
+    if weight_var:
+        weight_series, weight_valid_mask = prepare_weight(df, weight_var, log_callback)
+        if weight_series is not None:
+            log_callback(f"权重变量 '{weight_var}' 已使用，有效权重样本数：{weight_valid_mask.sum()}")
+        else:
+            log_callback(f"警告：权重变量 '{weight_var}' 无效或不在数据中，将不使用权重")
+    else:
+        weight_series = None
+        weight_valid_mask = None
+        log_callback("未配置权重变量")
 
     quasi_orig_x = merged_x_vars if x_var_merge else x_vars_resolved
 
@@ -231,6 +228,57 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
     channel_check_df = None
     success = False
     source_flag = None
+
+    # ---- 品牌筛选处理（仅用于样本量检查） ----
+    brand_values = []
+    brand_var = None
+    if config.get('brand_filter_enabled', False):
+        expr = config.get('filter_expr', '')
+        if expr:
+            import re
+            # 先找 brand= 的变量
+            brand_match = re.search(r'brand\s*=\s*([^;&]+)', expr)
+            if brand_match:
+                brand_values_raw = [v.strip() for v in brand_match.group(1).split(',') if v.strip()]
+                brand_var = 'brand'
+                log_callback(f"从表达式中提取品牌值（brand变量）：{brand_values_raw}")
+            else:
+                # 若没有 brand，则取第一个条件的值
+                parts = re.split(r'[;&]', expr)
+                for part in parts:
+                    if '=' in part:
+                        var, vals_str = part.split('=', 1)
+                        brand_values_raw = [v.strip() for v in vals_str.split(',') if v.strip()]
+                        brand_var = var.strip()
+                        log_callback(f"未找到 brand 变量，使用第一个条件（{brand_var}）的值作为品牌列表：{brand_values_raw}")
+                        break
+            # ---- 将数值转换为品牌标签 ----
+            if brand_var and brand_values_raw and brand_var in var_to_value_labels:
+                label_map = var_to_value_labels[brand_var]  # {数值: 标签文本}
+                converted = []
+                for v in brand_values_raw:
+                    # 尝试转为数值（可能是字符串形式的数字）
+                    try:
+                        num_val = int(v) if v.isdigit() else float(v)
+                    except ValueError:
+                        num_val = v  # 保留原字符串
+                    if num_val in label_map:
+                        converted.append(str(label_map[num_val]))
+                    else:
+                        # 如果未匹配，保留原值（可能是文本）
+                        converted.append(v)
+                brand_values = converted
+                log_callback(f"品牌值转换为标签：{brand_values}")
+            else:
+                # 无值标签映射或品牌变量不存在，直接使用原始值
+                brand_values = brand_values_raw
+                if brand_var and brand_var not in var_to_value_labels:
+                    log_callback(f"警告：品牌变量 '{brand_var}' 没有值标签映射，将直接使用原始值")
+        else:
+            log_callback("品牌筛选启用但 Filter 表达式为空，无法提取品牌值")
+    else:
+        log_callback("品牌筛选未启用")
+
 
     # ---- 定义解析 Data check 工作表的函数（内部） ----
     def parse_data_check_blocks(def_path, log_callback):
@@ -420,9 +468,9 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
 
         brands, channel_df, kpi_df = extract_samples_from_full_table(
             full_table_df, config, name_label_map,
-            filter_values=filter_values,
+            filter_values=brand_values,   # 传入品牌列表
             var_to_value_labels=var_to_value_labels,
-            filter_type=filter_type,
+            filter_type='numeric',       # 不再使用，但保留以兼容
             log_callback=log_callback
         )
         source_flag = 'full_table'
@@ -509,7 +557,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
             log_callback(f"样本量核对过程发生异常：{e}，将跳过核对结果")
             import traceback
             log_callback(traceback.format_exc())
-            kpi_check_df = pd.DataFrame()   # 改为空 DataFrame
+            kpi_check_df = pd.DataFrame()
             channel_check_df = pd.DataFrame()
             success = False
     else:
@@ -562,45 +610,17 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
         # ---- 应用筛选（如果有） ----
         filter_desc = None
         if filter_cfg:
-            expr = filter_cfg['expr']
-            if '=' in expr:
-                var_part, val_part = expr.split('=', 1)
-                filter_var = var_part.strip()
-                filter_vals = [v.strip() for v in val_part.split(',') if v.strip()]
-                # 解析筛选变量名（不区分大小写）
-                filter_var_resolved = resolve_var(filter_var)
-                if filter_var_resolved not in df.columns:
-                    log_callback(f"警告：回归 {idx} 的筛选变量 '{filter_var}' 不存在，将使用全部数据")
+            expr = filter_cfg.get('expr', '')
+            if expr and expr.strip():
+                try:
+                    df_reg = parse_filter_expr(expr, df, var_to_value_labels, log_callback=log_callback)
+                    filter_desc = expr
+                    log_callback(f"回归 {idx} 应用筛选：{filter_desc}，样本数：{len(df_reg)}")
+                except Exception as e:
+                    log_callback(f"警告：回归 {idx} 筛选失败：{e}，将使用全部数据")
                     df_reg = df
                     filter_desc = None
-                else:
-                    # 尝试转换值类型
-                    col_dtype = df[filter_var_resolved].dtype
-                    converted_vals = []
-                    for val in filter_vals:
-                        try:
-                            if 'int' in str(col_dtype):
-                                val = int(val)
-                            elif 'float' in str(col_dtype):
-                                val = float(val)
-                        except ValueError:
-                            pass
-                        converted_vals.append(val)
-                    # 应用筛选
-                    try:
-                        if len(converted_vals) == 1:
-                            df_reg = df[df[filter_var_resolved] == converted_vals[0]].copy()
-                            filter_desc = f"{filter_var_resolved} == {converted_vals[0]}"
-                        else:
-                            df_reg = df[df[filter_var_resolved].isin(converted_vals)].copy()
-                            filter_desc = f"{filter_var_resolved} in {converted_vals}"
-                        log_callback(f"回归 {idx} 应用筛选：{filter_desc}，样本数：{len(df_reg)}")
-                    except Exception as e:
-                        log_callback(f"警告：回归 {idx} 筛选失败：{e}，将使用全部数据")
-                        df_reg = df
-                        filter_desc = None
             else:
-                log_callback(f"警告：回归 {idx} 的筛选表达式 '{expr}' 格式无效，将使用全部数据")
                 df_reg = df
                 filter_desc = None
         else:

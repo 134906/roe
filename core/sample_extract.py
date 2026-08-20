@@ -90,12 +90,6 @@ def extract_kpi_data(df, start_row, log_callback=print):
     log_callback(f"数据区域共 {len(data_df)} 行")
     return data_df, table_name, brand_row
 
-def is_brand_filter(filter_var):
-    """简单判断筛选变量是否为品牌类型（包含 'brand'）"""
-    if filter_var:
-        return 'brand' in filter_var.lower()
-    return False
-
 def extract_samples_from_full_table(df_full, config, name_label_map,
                                     filter_values=None,
                                     var_to_value_labels=None,
@@ -103,63 +97,26 @@ def extract_samples_from_full_table(df_full, config, name_label_map,
                                     log_callback=print):
     """
     从 Full_Table 中提取渠道和 KPI 的样本量。
-    支持两种逻辑：
-    1. 原逻辑（无筛选或非品牌筛选或数值变量）：对所有品牌求和。
-    2. 新逻辑（分类变量且为品牌筛选）：只对筛选品牌求和。
+    品牌筛选由 config['brand_filter_enabled'] 控制，品牌值列表通过 filter_values 传入。
     """
     # ============================================================
-    # 准备：品牌筛选转换
+    # 准备：判断是否启用品牌筛选
     # ============================================================
-    filter_var = config.get('filter_var', '')
+    brand_filter_enabled = config.get('brand_filter_enabled', False)
     use_filtered = False
     filtered_brands = []
 
     log_callback("="*60)
     log_callback(f"开始样本量提取")
-    log_callback(f"筛选变量：{filter_var}")
-    log_callback(f"筛选值：{filter_values}")
-    log_callback(f"筛选类型：{filter_type}")
+    log_callback(f"品牌筛选启用：{brand_filter_enabled}")
+    log_callback(f"品牌值列表：{filter_values}")
 
-    # 判断是否启用品牌筛选：
-    # 条件：filter_values 非空、filter_type == 'category'、且 config 中 filter_val_brand=True
-    filter_val_brand = config.get('filter_val_brand', False)
-    if filter_values and filter_type == 'category' and filter_val_brand:
-        log_callback("检测到品牌筛选（分类变量），尝试转换筛选值")
-        # 获取该变量的值标签映射
-        value_labels_map = {}
-        if var_to_value_labels and filter_var in var_to_value_labels:
-            value_labels_map = var_to_value_labels[filter_var]
-            log_callback(f"值标签映射：{value_labels_map}")
-        else:
-            log_callback("没有值标签映射")
-
-        for fv in filter_values:
-            # 尝试转换为数字
-            try:
-                num_val = int(fv) if fv.isdigit() else float(fv)
-            except ValueError:
-                num_val = None
-            if num_val is not None and value_labels_map and num_val in value_labels_map:
-                brand_name = value_labels_map[num_val]
-                filtered_brands.append(brand_name)
-                log_callback(f"转换：{fv} -> {brand_name}")
-            else:
-                # 保留原值（可能是品牌名）
-                filtered_brands.append(fv)
-                log_callback(f"保留原值：{fv}")
-
-        filtered_brands = list(dict.fromkeys(filtered_brands))
-        if filtered_brands:
-            use_filtered = True
-            log_callback(f"筛选品牌（最终）：{filtered_brands}")
-        else:
-            log_callback("筛选品牌列表为空，将使用原逻辑")
-            use_filtered = False
+    if brand_filter_enabled and filter_values:
+        use_filtered = True
+        filtered_brands = filter_values
+        log_callback(f"将按品牌筛选：{filtered_brands}")
     else:
-        if filter_values:
-            log_callback(f"筛选变量不是品牌类型或非分类变量，将使用原逻辑（对所有品牌求和）")
-        else:
-            log_callback("未设置筛选值，将使用原逻辑（对所有品牌求和）")
+        log_callback("未启用品牌筛选或无品牌值，将对所有品牌求和")
 
     # ============================================================
     # 渠道表
@@ -253,8 +210,14 @@ def extract_samples_from_full_table(df_full, config, name_label_map,
     # ============================================================
     kpi_keywords = config.get('sample_kpi_keywords', [])
     kpi_types = config.get('sample_kpi_types', [])
-    if len(kpi_keywords) != 6 or len(kpi_types) != 6:
-        raise ValueError(f"KPI 关键词和类型必须各有 6 个，当前关键词数量：{len(kpi_keywords)}，类型数量：{len(kpi_types)}")
+    
+    # 如果关键词为空，直接返回空 KPI
+    if not kpi_keywords:
+        log_callback("警告：未配置 KPI_Keywords，KPI 样本量提取将返回空数据框")
+        return all_brands, channel_df, pd.DataFrame(columns=['table_name', 'kpi_label', 'sample'])
+
+    # 移除强制 6 个的校验，支持任意数量
+    log_callback(f"共读取到 {len(kpi_keywords)} 个 KPI 关键词")
 
     top2_labels = config.get('sample_top2box_label', ['Net : Top 2 Box'])
     kpi_rows = []
@@ -271,7 +234,8 @@ def extract_samples_from_full_table(df_full, config, name_label_map,
         log_callback(f"处理第 {idx+1} 个 KPI 表，关键词：{kw}，类型：{typ}")
         start_k = find_table_start(df_full, kw, log_callback)
         if start_k is None:
-            raise ValueError(f"未找到 KPI 表头: {kw}")
+            log_callback(f"警告：未找到 KPI 表头: {kw}，跳过")
+            continue
         data_k, table_name_k, brand_row_k = extract_kpi_data(df_full, start_k, log_callback)
 
         typ = typ.lower()
@@ -314,7 +278,8 @@ def extract_samples_from_full_table(df_full, config, name_label_map,
                 if found_row is not None:
                     break
             if found_row is None:
-                raise ValueError(f"在表 '{kw}' 中未找到包含 {top2_labels} 中任一标签的行")
+                log_callback(f"警告：在表 '{kw}' 中未找到包含 {top2_labels} 中任一标签的行，跳过")
+                continue
 
             if brand_row_k is not None:
                 col_names = [str(c).strip() for c in brand_row_k.iloc[1:]]
@@ -359,8 +324,8 @@ def extract_samples_from_full_table(df_full, config, name_label_map,
             log_callback(f"Top2 表 '{kw}' 最终样本量 = {total_sample}")
 
         else:
-            raise ValueError(f"未知的 KPI 类型: {typ}")
+            log_callback(f"警告：未知的 KPI 类型: {typ}，跳过")
 
     kpi_df = pd.DataFrame(kpi_rows)
-    log_callback("KPI 表提取完成")
+    log_callback(f"KPI 表提取完成，共 {len(kpi_df)} 个有效 KPI")
     return all_brands, channel_df, kpi_df

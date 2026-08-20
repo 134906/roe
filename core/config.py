@@ -19,10 +19,7 @@ def load_definition(def_path):
         'y_vars': parse_list(params.get('Y_Var', '')),
         'x_vars': parse_list(params.get('X_Var', '')),
         'weight_var': params.get('Weight', ''),
-        'filter_var': params.get('Filter_Var', ''),
-        'filter_val': params.get('Filter_Value', None),
-        'filter_type': 'numeric',
-        'filter_val_brand': False,
+        'filter_expr': params.get('Filter', ''),  
         'factor_rotation': params.get('Factor_Rotation', 'procrustes'),
         'sample_channel_keyword': params.get('Channel_Keyword', ''),
         'sample_top2box_label': parse_list(params.get('Top2Box_Label', 'Net : Top 2 Box')),
@@ -30,29 +27,16 @@ def load_definition(def_path):
         'x_var_merge': False,
         'merge_configs': [],
         'merged_x_vars': [],
+        'brand_filter_enabled': False,
     }
 
-    # ---- 从 config_raw 中扫描 C 列参数，并收集 filter 信息 ----
+        # ---- 从 config_raw 中扫描 C 列参数，并收集 reg_filter 信息 ----
     filter_info = {}  # reg_num -> {'expr': 'var=val', 'type': 'cat/num'}
 
     for idx, row in config_raw.iterrows():
         a_col = str(row.iloc[0]).strip().replace('\n', '').replace('\r', '') if pd.notna(row.iloc[0]) else ''
         b_col = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ''
         c_val = str(row.iloc[2]).strip() if pd.notna(row.iloc[2]) else ''
-
-        # ---- Filter_Var 行的 C 列：filter_type ----
-        if a_col == 'Filter_Var':
-            if c_val.lower() in ['category', '分类']:
-                config['filter_type'] = 'category'
-            else:
-                config['filter_type'] = 'numeric'
-
-        # ---- Filter_Value 行的 C 列：是否品牌筛选 ----
-        if a_col == 'Filter_Value':
-            if c_val.lower() == 'brand':
-                config['filter_val_brand'] = True
-            else:
-                config['filter_val_brand'] = False
 
         # ---- Y_Var 行的 C 列：是否 recode Y ----
         if a_col == 'Y_Var':
@@ -68,14 +52,21 @@ def load_definition(def_path):
             else:
                 config['x_var_merge'] = False
 
-        # ---- 识别 regX_filter 行，收集表达式和类型 ----
+        # ---- Channel_Keyword 行的 C 列：是否启用品牌筛选 ----
+        if a_col == 'Channel_Keyword':
+            if c_val.lower() == 'brand':
+                config['brand_filter_enabled'] = True
+            else:
+                config['brand_filter_enabled'] = False
+
+        # ---- 识别 regX_filter 行，收集表达式（type 保留但不再使用） ----
         if a_col.startswith('reg') and a_col.endswith('_filter'):
             reg_num = a_col.replace('_filter', '')
             filter_info[reg_num] = {'expr': b_col, 'type': c_val}
 
     print(f"Y_Var recode: {config['y_var_recode']}")
     print(f"X_Var merge: {config['x_var_merge']}")
-    print(f"Filter_Value brand: {config['filter_val_brand']}")
+    print(f"Brand filter enabled: {config['brand_filter_enabled']}")
 
     # ---- 读取 Merge sheet（仅在 x_var_merge=True 时） ----
     if config['x_var_merge']:
@@ -151,13 +142,10 @@ def load_definition(def_path):
             print(f"行{idx+1} | 读取到KPI: {b_col_val} | 类型: {kpi_type}")
 
     if not kpi_keywords:
-        raise ValueError(
-            "❌ 未读取到KPI_Keywords的竖排数据！\n"
-            "可能原因：\n"
-            "1. 标题行名称错误，需严格包含'KPI_Keywords'；\n"
-            "2. 标题行下方的B列没有有效KPI关键词；\n"
-            "3. 表格列顺序错误（需A列标题、B列关键词、C列类型）"
-        )
+        print("⚠️ 警告：列表中未读取到任何 KPI 关键词")
+        # 保持空列表
+    else:
+        print(f"✅ KPI数据读取完成，共读取{len(kpi_keywords)}个KPI")
 
     config['sample_kpi_keywords'] = kpi_keywords
     config['sample_kpi_types'] = kpi_types

@@ -85,8 +85,8 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
     # 5. 2C 均值
     ws = get_or_create_sheet(wb, '2C 均值')
     if has_filtered_reg and reg_descriptives_info:
-        filtered_infos = [info for info in reg_descriptives_info if info['filter_desc'] is not None]
-        write_reg_descriptives_to_sheet(ws, filtered_infos)
+        # 有任一回归有筛选，输出所有回归的描述统计
+        write_reg_descriptives_to_sheet(ws, reg_descriptives_info)
     else:
         if desc_list:
             write_descriptives_to_sheet(ws, desc_list)
@@ -95,8 +95,15 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
     # 6. seenvsnoseen
     if qd_stats is not None and qd_means is not None:
         ws = get_or_create_sheet(wb, 'seenvsnoseen')
-        write_seen_vs_noseen_to_sheet(ws, qd_stats, qd_desc, qd_means,
-                                      channel_means_dict, diff_table, listwise_n)
+        write_seen_vs_noseen_to_sheet(
+            ws,
+            qd_stats,
+            qd_desc,
+            qd_means,
+            channel_means_dict,
+            diff_table,
+            listwise_n,
+        )
         log_callback("  seenvsnoseen 填充完成")
 
     # 7. Sample_Check

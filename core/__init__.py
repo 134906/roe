@@ -10,9 +10,96 @@ from .sample_extract import extract_samples_from_full_table
 from .workfile_io import fill_workfile
 import pandas as pd
 import numpy as np
+import os
+import openpyxl
+from openpyxl.utils import get_column_letter  # 用于列宽复制
+import win32com.client
+from win32com.client import constants
+
+def _extract_sheets_to_tocs_by_delete(workbook_path, output_tocs_path, sheet_names, log_callback=print):
+    """
+    使用 Excel COM 复制整个工作簿，然后仅保留指定工作表（其他删除），
+    并将目标工作表的值转换为数值（避免公式引用丢失）。
+    """
+    import traceback
+    excel = win32com.client.Dispatch("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    excel.ScreenUpdating = False
+
+    try:
+        wb = excel.Workbooks.Open(os.path.abspath(workbook_path))
+        # 强制计算所有公式
+        wb.RefreshAll()
+        excel.CalculateFull()
+        excel.CalculateUntilAsyncQueriesDone()  # 等待后台刷新完成
+
+        # 另存为新文件（相当于复制整个工作簿）
+        wb.SaveAs(os.path.abspath(output_tocs_path))
+        # 现在 wb 指向新文件，我们在新文件中操作
+
+        # 将目标工作表的值转换为数值（防止公式引用被删除的工作表而报错）
+        for name in sheet_names:
+            try:
+                ws = wb.Sheets(name)
+                used = ws.UsedRange
+                if used is not None:
+                    used.Value = used.Value  # 将公式替换为计算后的值
+                    log_callback(f"  已将工作表 {name} 公式转为值")
+            except Exception as e:
+                log_callback(f"  警告：值化工作表 {name} 失败: {e}")
+
+        # 激活第一个保留的工作表，避免删除当前激活的工作表
+        wb.Sheets(sheet_names[0]).Activate()
+
+        # 收集所有工作表名称（因为删除后集合会变化，先取名称列表）
+        all_sheet_names = [s.Name for s in wb.Sheets]
+        for s_name in all_sheet_names:
+            if s_name not in sheet_names:
+                try:
+                    wb.Sheets(s_name).Delete()
+                    log_callback(f"  已删除工作表：{s_name}")
+                except Exception as e:
+                    log_callback(f"  警告：删除工作表 {s_name} 失败: {e}")
+
+        wb.Save()
+        log_callback(f"TOCS 文件已生成：{output_tocs_path}")
+        return True
+
+    except Exception as e:
+        log_callback(f"TOCS 生成过程中出错: {e}")
+        log_callback(traceback.format_exc())
+        return False
+    finally:
+        if 'wb' in locals():
+            wb.Close(SaveChanges=False)
+        excel.Quit()
+        del excel
 
 
-def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=None, log_callback=print, generate_ppt=True, ppt_template=None):
+def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=None, log_callback=print, generate_ppt=False, ppt_template=None, ppt_only=False):
+    # ==================== 新增：仅生成PPT模式 ====================
+    if ppt_only:
+        log_callback("进入仅生成PPT模式...")
+        if not workfile_path or not os.path.exists(workfile_path):
+            log_callback("错误：未提供有效的workfile路径，无法生成PPT")
+            return None
+
+        # 1. 直接生成PPT（不修改文件）
+        from .ppt_export import export_charts_to_ppt
+        base, ext = os.path.splitext(output_path)   # 获取基础名称
+        ppt_output = f"{base}.pptx"
+        sheet_names = ['2F.Results to CS_MIA', '2F.Results to CS_ROE SCAN']
+        export_charts_to_ppt(workfile_path, ppt_output, template_path=ppt_template, sheet_names=sheet_names)
+        log_callback(f"PPT 已生成: {ppt_output}")
+
+        # 2. 提取 TOCS2
+        base, ext = os.path.splitext(output_path)  # 如果未定义 base，此处获取
+        tocs2_path = f"{base}_tocs2.xlsx"
+        sheet_list = ['2E.Analysis_MIA', '2F.Results to CS_MIA', '2E.ROE Scan', '2F.Results to CS_ROE SCAN']
+        _extract_sheets_to_tocs_by_delete(workfile_path, tocs2_path, sheet_list, log_callback)
+
+    # ---- 原有正常分析流程 ----
     # 第1步：加载配置
     log_callback("开始加载定义文件...")
     config = load_definition(def_path)
@@ -20,7 +107,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
     filter_expr = config.get('filter_expr', '')
     log_callback(f"筛选表达式：{filter_expr}")
 
-    # 第2步：读取SPSS数据（仅传入 filter_expr）
+    # 第2步：读取SPSS数据
     log_callback("读取SPSS数据...")
     df, meta, name_label_map, var_to_value_labels = read_spss(
         spss_path,
@@ -279,7 +366,6 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
     else:
         log_callback("品牌筛选未启用")
 
-
     # ---- 定义解析 Data check 工作表的函数（内部） ----
     def parse_data_check_blocks(def_path, log_callback):
         """
@@ -470,7 +556,7 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
             full_table_df, config, name_label_map,
             filter_values=brand_values,   # 传入品牌列表
             var_to_value_labels=var_to_value_labels,
-            filter_type='numeric',       # 不再使用，但保留以兼容
+            filter_type='numeric',        # 不再使用，但保留以兼容
             log_callback=log_callback
         )
         source_flag = 'full_table'
@@ -721,7 +807,6 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
     if workfile_path:
         log_callback("开始填充 workfile 模板...")
         try:
-            import os
             base, ext = os.path.splitext(output_path)
             workfile_output = f"{base}_workfile_filled{ext}"
             fill_workfile(
@@ -747,6 +832,26 @@ def run_analysis(spss_path, def_path, output_path="ROE_Results", workfile_path=N
                 sample_check_source=source_flag
             )
             log_callback(f"Workfile 填充完成！保存至: {workfile_output}")
+
+            # ===== 生成 TOCS1（基于填充后的 workfile，使用 COM 删除多余工作表） =====
+            tocs1_path = f"{base}_tocs1.xlsx"
+            sheet_list = ['2E.Analysis_MIA', '2F.Results to CS_MIA', '2E.ROE Scan', '2F.Results to CS_ROE SCAN']
+            _extract_sheets_to_tocs_by_delete(workfile_output, tocs1_path, sheet_list, log_callback)
+
+            # ===== 生成 PPT（若需要） =====
+            if generate_ppt:
+                log_callback("开始生成 PPT...")
+                try:
+                    from .ppt_export import export_charts_to_ppt
+                    ppt_output = output_path.replace('.xlsx', '.pptx') if output_path.endswith('.xlsx') else output_path + '.pptx'
+                    sheet_names = ['2F.Results to CS_MIA', '2F.Results to CS_ROE SCAN']
+                    export_charts_to_ppt(workfile_output, ppt_output, template_path=ppt_template, sheet_names=sheet_names)
+                    log_callback(f"PPT 生成完成: {ppt_output}")
+                except Exception as e:
+                    log_callback(f"生成 PPT 时出错: {e}")
+                    import traceback
+                    log_callback(traceback.format_exc())
+
         except Exception as e:
             log_callback(f"Workfile 填充过程中发生错误: {e}")
             import traceback

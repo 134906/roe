@@ -114,12 +114,20 @@ def fill_workfile(workfile_path, output_workfile_path, config, desc_list, fa_ext
     # 保存到输出路径
     wb.save(output_workfile_path)
     wb.close()
-    
-    # 清理临时文件
+
+    # ---- 新增：清理空白列（仅删除列） ----
+    #try:
+        #from .ppt_export import clean_workfile_columns
+        #log_callback("清理 workfile 中的空白列...")
+        #clean_workfile_columns(output_workfile_path, log_callback=log_callback)
+    #except Exception as e:
+        #log_callback(f"清理空白列时出错（不影响结果）: {e}")
+       #import traceback
+        #log_callback(traceback.format_exc())
+
+    # 清理临时文件（如果有）
     if tmp_path and os.path.exists(tmp_path):
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass  # 忽略删除失败
-
-    log_callback(f"Workfile 填充完成，保存至: {output_workfile_path}")
+            pass
